@@ -9,8 +9,17 @@ v_data_source = dbutils.widgets.get("p_data_source")
 
 # COMMAND ----------
 
-from utils.configurations import (raw_folder_path, processed_folder_path)
+dbutils.widgets.text("p_file_date", "2021-03-21")
+v_file_date = dbutils.widgets.get("p_file_date")
+
+# COMMAND ----------
+
+from utils.configurations import raw_folder_path, processed_folder_path
 from utils.common_functions import add_ingestion_date
+
+# COMMAND ----------
+
+# MAGIC %run "../utils/delta_utils"
 
 # COMMAND ----------
 
@@ -46,7 +55,7 @@ results_schema = StructType(fields=[StructField("resultId", IntegerType(), False
 
 results_df = spark.read \
 .schema(results_schema) \
-.json(f"{raw_folder_path}/results.json")
+.json(f"{raw_folder_path}/{v_file_date}/results.json")
 
 # COMMAND ----------
 
@@ -68,7 +77,8 @@ results_with_columns_df = results_df.withColumnRenamed("resultId", "result_id") 
                                     .withColumnRenamed("fastestLap", "fastest_lap") \
                                     .withColumnRenamed("fastestLapTime", "fastest_lap_time") \
                                     .withColumnRenamed("fastestLapSpeed", "fastest_lap_speed") \
-                                    .withColumn("data_source", lit(v_data_source))
+                                    .withColumn("data_source", lit(v_data_source)) \
+                                    .withColumn("file_date", lit(v_file_date))
 
 # COMMAND ----------
 
@@ -90,12 +100,41 @@ results_final_df = results_with_ingestion_date_df.drop(col("statusId"))
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC De-dupe the dataframe
+
+# COMMAND ----------
+
+results_deduped_df = results_final_df.dropDuplicates(['race_id', 'driver_id'])
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ##### Step 4 - Write to output to processed container in parquet format
 
 # COMMAND ----------
 
-results_final_df.write.mode("overwrite").partitionBy('race_id').parquet(f"{processed_folder_path}/results")
+merge_condition = "tgt.result_id = src.result_id AND tgt.race_id = src.race_id"
+merge_delta_data(results_deduped_df, 'f1_processed', 'results', processed_folder_path, merge_condition, 'race_id')
 
 # COMMAND ----------
 
 dbutils.notebook.exit("Success")
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC SELECT COUNT(1)
+# MAGIC   FROM f1_processed.results;
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC SELECT race_id, driver_id, COUNT(1) 
+# MAGIC FROM f1_processed.results
+# MAGIC GROUP BY race_id, driver_id
+# MAGIC HAVING COUNT(1) > 1
+# MAGIC ORDER BY race_id, driver_id DESC;
+
+# COMMAND ----------
+
+# MAGIC %sql SELECT * FROM f1_processed.results WHERE race_id = 540 AND driver_id = 229;
